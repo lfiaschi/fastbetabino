@@ -1,0 +1,157 @@
+docbuild
+rocket_om/adword_food/temp*
+#Git
+*.orig
+*#
+*~
+#Config
+sftp-config.json
+.project
+.pydevproject
+develop
+
+
+
+*.rst
+*.pkl
+*.in
+*.p
+bin/*
+notebooks/*
+
+rocketads/deprecated/apps/foodpanda/tests/foodpanda_mock_old
+rocketads/deprecated/apps/foodpanda/tests/log.txt
+rocketads/deprecated/apps/foodpanda/sql/
+
+# Compiled python modules.
+*.pyc
+*.pyw
+
+# Setuptools distribution folder.
+/dist/
+
+# Python egg metadata, regenerated from source files by setuptools.
+/*.egg-info
+
+# pycharms data
+.idea/
+
+# data
+/data/
+
+# HDFs
+*.h5
+*.h5.*
+
+#ipython stuff
+*.ipynb*
+
+# excel and files
+*.csv
+*.xlsx
+
+
+
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+.tox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+
+# Translations
+*.mo
+
+# Mr Developer
+.mr.developer.cfg
+.project
+.pydevproject
+
+# Rope
+.ropeproject
+
+# Django stuff:
+*.log
+*.pot
+
+# Sphinx documentation
+docs/_build/
+
+
+lib-cov
+lcov.info
+*.seed
+*.log
+*.csv
+*.dat
+*.out
+*.pid
+*.gz
+
+node_modules/
+bower_components/
+*.log
+
+build/
+dist/
+
+pids
+logs
+results
+build
+.grunt
+
+node_modules
+
+.meteor/local
+.meteor/meteorite
+
+*.gem
+*.rbc
+/.config
+
+## Documentation cache and generated files:
+/.yardoc/
+/_yardoc/
+
+
+## Environment normalisation:
+/.bundle/
+/lib/bundler/man/
+
+# for a library or gem, you might want to ignore these files since the code is
+# intended to run in multiple environments; otherwise, check them in:
+# Gemfile.lock
+# .ruby-version
+# .ruby-gemset
+
+# unless supporting rvm < 1.11.0 or doing something fancy, ignore this:
+.rvmrc
+
+*.tar
+*.tar.*
+*.log
+*.log.*
+*.sig
+*.tgz*
+
+#mac stuff
+.DS_Store
