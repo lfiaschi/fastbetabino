@@ -3,7 +3,7 @@ from array import array
 import numpy as np
 
 
-N=100000
+N=10000
 
 imps = np.random.randint(1,N,N)
 clicks = list()

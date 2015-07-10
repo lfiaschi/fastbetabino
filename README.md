@@ -1,2 +1,2 @@
 # fastbetabino
-Superfast betabinomial fit implemented in Cython
+Superfast betabinomial fit implemented in Cython.
