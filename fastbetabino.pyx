@@ -69,13 +69,6 @@ cdef double dalpha_log_likelihood(double i ,double c, double alpha=1.0,  double 
     res = DAB-digamma(i+alpha+beta)+digamma(c+ alpha)-DA
     return res
 
-def num_der(impressions,clicks,alpha,beta):
-    val = log_likelihood(impressions,clicks,alpha,beta)
-
-    da = (val-log_likelihood(impressions,clicks,alpha+1e-10,beta) ) / 1e-10
-    db = (val-log_likelihood(impressions,clicks,alpha,beta+1e-10) ) / 1e-10
-    return da,db
-
 cdef double dbeta_log_likelihood(double i ,double c, double alpha=1.0,  double beta=1.0) nogil:
     """
     derivative respect to beta of the log likelihood for the betabinomial model
@@ -333,52 +326,54 @@ def fit_alpha_beta_minibatch(object impressions_arr, object clicks_arr,
     ARLEN=len(clicks)
 
     cdef double numerator,denominator,c,i
-    shuffle_data(impressions,clicks,ARLEN)
+    # shuffle_data(impressions,clicks,ARLEN)
 
-    start_read = 0
-    stop_read = N
     for it in xrange(niter):
-        #shuffle_data(impressions,clicks,ARLEN)
+        shuffle_data(impressions,clicks,ARLEN)
+        start_read = 0
+        stop_read = N
+        
+        while (stop_read<=ARLEN):
+            numerator=0
+            denominator=0
+            for jj in prange(start_read,stop_read,nogil=True,num_threads=num_threads):
+                c=clicks[jj]
+                i=impressions[jj]
+                #TODO: this can be further optimized by moving this digamma (alpha_old) from the loop
+                numerator += digamma(c + alpha_old) - digamma(alpha_old)
 
-        numerator=0
-        denominator=0
-        for jj in prange(start_read,stop_read,nogil=True,num_threads=num_threads):
-            c=clicks[jj]
-            i=impressions[jj]
-            numerator += digamma(c + alpha_old) - digamma(alpha_old)
+                denominator += digamma(i + alpha_old+beta_old) - digamma(alpha_old+beta_old)
 
-            denominator += digamma(i + alpha_old+beta_old) - digamma(alpha_old+beta_old)
+            alpha=alpha_old*numerator/denominator
 
-        alpha=alpha_old*numerator/denominator
+            numerator=0
+            denominator=0
+            for jj in prange(start_read,stop_read,nogil=True,num_threads=num_threads):
+                c=clicks[jj]
+                i=impressions[jj]
+                numerator += digamma(i-c + beta_old) - digamma(beta_old)
 
-        numerator=0
-        denominator=0
-        for jj in prange(start_read,stop_read,nogil=True,num_threads=num_threads):
-            c=clicks[jj]
-            i=impressions[jj]
-            numerator += digamma(i-c + beta_old) - digamma(beta_old)
-
-            denominator += digamma(i + alpha_old+beta_old) - digamma(alpha_old+beta_old)
+                denominator += digamma(i + alpha_old+beta_old) - digamma(alpha_old+beta_old)
 
 
-        beta=beta_old*numerator/denominator
+            beta=beta_old*numerator/denominator
 
-        #print 'alpha {} | {}  beta {} | {}'.format(alpha,alpha_old,beta,beta_old)
+            #print 'alpha {} | {}  beta {} | {}'.format(alpha,alpha_old,beta,beta_old)
 
-        if abs(alpha-alpha_old) <tol and abs(beta-beta_old)<tol:
-            break
+            if abs(alpha-alpha_old) <tol and abs(beta-beta_old)<tol:
+                break
 
-        alpha_old=alpha
-        beta_old=beta
+            alpha_old=alpha
+            beta_old=beta
 
-        start_read+=N
-        stop_read+=N
+            start_read+=N
+            stop_read+=N
 
-        if stop_read>=ARLEN:
-            #print 'reshuffling batch {}  start = {} stop = {} '.format(N,start_read,stop_read)
-            shuffle_data(impressions,clicks,ARLEN)
-            start_read=0
-            stop_read=N
+            # if stop_read>=ARLEN:
+            #     #print 'reshuffling batch {}  start = {} stop = {} '.format(N,start_read,stop_read)
+            #     shuffle_data(impressions,clicks,ARLEN)
+            #     start_read=0
+            #     stop_read=N
 
     return alpha,beta
 
