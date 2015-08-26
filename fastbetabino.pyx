@@ -2,51 +2,213 @@ from cpython cimport array as c_array
 from cython.parallel import prange, parallel, threadid
 from array import array
 cimport cython
-cimport libc.math
-cimport libc.limits
 from scipy.stats import beta as betadist
+from scipy.stats import kstest
+import numpy as np
+from libc.stdlib cimport rand, RAND_MAX
+from libc.math cimport sqrt
 
+cdef extern from "gsl/gsl_sf_gamma.h":
+      double  gamma "gsl_sf_gamma" (double x) nogil
+      double  lgamma "gsl_sf_lngamma" (double x) nogil
 
-@cython.cdivision(True)
-cdef double digamma(double x) nogil:
+cdef extern from "gsl/gsl_sf_psi.h":
+      double  digamma "gsl_sf_psi" (double x) nogil
+
+cpdef log_likelihood(object impressions_arr, object clicks_arr, double alpha=1.0,  double beta=1.0):
     """
-    Compute the digamma function.
-    Implementation adapted from that of Bernardo (1976).
+    Log likelihood for the betabinomial model
+    :param impressions_arr:
+    :param clicks_arr:
+    :param alpha:
+    :param beta:
+    :return:
     """
 
-    cdef double s = 1e-5
-    cdef double c = 8.5
-    cdef double s3 = 8.333333333e-2
-    cdef double s4 = 8.333333333e-3
-    cdef double s5 = 3.968253968e-3
-    cdef double d1 = -0.5772156649
+    cdef double[:] impressions = array('d',impressions_arr)
+    cdef double[:] clicks = array('d',clicks_arr)
 
-    cdef double r
-    cdef double y
-    cdef double v
+    cdef int N,it
 
-    if x > s:
-        y = x
-        v = 0.0
+    cdef double res, positive, negative, LGAB, LGA, LGB, c, i
 
-        while y < c:
-            v -= 1.0 / y
-            y += 1.0
+    N = len(clicks)
 
-        r = 1.0 / y
-        v += libc.math.log(y) - r / 2.0
-        r = 1.0 / (y * y)
-        v -= r * (s3 - r * (s4 - r * s5))
-    else:
-        v = d1 - 1.0 / x
+    res=0.0
 
-    return v
+    LGAB = lgamma(alpha+beta)
+    LGA = lgamma(alpha)
+    LGB = lgamma(beta)
+
+    for it in xrange(N):
+        c = clicks[it]
+        i = impressions[it]
+        positive = LGAB + lgamma(c+alpha) + lgamma(i-c+beta)
+        negative = lgamma(i+alpha+beta) + LGA + LGB
+
+        res+=positive-negative
+
+    return res
+
+cdef double dalpha_log_likelihood(double i ,double c, double alpha=1.0,  double beta=1.0) nogil:
+    """
+    derivative respect to beta of the log likelihood for the betabinomial model
+    :param i:
+    :param c:
+    :param alpha:
+    :param beta:
+    :return:
+    """
+
+    cdef double res, DAB, DA, DB
+
+    DAB = digamma(alpha+beta)
+    DA = digamma(alpha)
+    DB = digamma(beta)
+
+    res = DAB-digamma(i+alpha+beta)+digamma(c+ alpha)-DA
+    return res
+
+def num_der(impressions,clicks,alpha,beta):
+    val = log_likelihood(impressions,clicks,alpha,beta)
+
+    da = (val-log_likelihood(impressions,clicks,alpha+1e-10,beta) ) / 1e-10
+    db = (val-log_likelihood(impressions,clicks,alpha,beta+1e-10) ) / 1e-10
+    return da,db
+
+cdef double dbeta_log_likelihood(double i ,double c, double alpha=1.0,  double beta=1.0) nogil:
+    """
+    derivative respect to beta of the log likelihood for the betabinomial model
+    :param i:
+    :param c:
+    :param alpha:
+    :param beta:
+    :return:
+    """
+
+    cdef double res, DAB, DA, DB
+
+    DAB = digamma(alpha+beta)
+    DA = digamma(alpha)
+    DB = digamma(beta)
+
+    res = DAB-digamma(i+alpha+beta)+digamma(i-c+ beta)-DB
+    return res
+
+from scipy.optimize import minimize
+def fit_alpha_beta_lbfgs(impressions_arr, clicks_arr, alpha0=1.0, beta0=1.0 ):
+
+    func = lambda x: - log_likelihood(impressions_arr,clicks_arr,x[0],x[1])
+
+    opt = minimize(func,(alpha0,beta0),bounds=[(0.0001,1000),(0.0001,1000)],tol=1e-10,method='L-BFGS-B')
+    print opt
+    return opt['x']
+
 
 
 @cython.cdivision(True)
 @cython.boundscheck(False)
 @cython.wraparound(False)
-def fit_alpha_beta(object impressions_arr, object clicks_arr, double alpha0=1.5, double beta0=5,int niter=10000):
+def fit_alpha_beta_sgd(object impressions_arr, object clicks_arr,
+                   double alpha0=1.0, double beta0=1.0,
+                   double eta0=1e-2,
+                   int nepochs=100,
+                   int num_threads=1,
+                   int batch_size= 1000,
+                   float tol=1e-10
+                   ):
+    """
+    Fit betabinomials coefficients
+    :param impressions_arr:
+    :param clicks_arr:
+    :param alpha0:
+    :param beta0:
+    :param nepochs:
+    :param num_threads number of threads for the summations
+    :return:
+    """
+
+    assert len(impressions_arr) == len(clicks_arr), 'clicks {}!={} impressions'.format(len(impressions_arr),len(clicks_arr))
+    cdef double[:] impressions = array('d',impressions_arr)
+    cdef double[:] clicks = array('d',clicks_arr)
+
+    cdef double alpha_old=alpha0
+    cdef double beta_old=beta0
+    cdef double alpha
+    cdef double beta
+    cdef size_t it, jj,N, ARLEN, start_read,stop_read, t
+
+    N = batch_size
+    ARLEN=len(clicks)
+    alpha=alpha_old
+    beta=beta_old
+    cdef double dalpha,dbeta,c,i
+    t=0
+    for it in xrange(nepochs):
+        #shuffle_data(impressions,clicks,ARLEN)
+        start_read = 0
+        stop_read = N
+        t+=1
+        #print 'it = {}'.format(it)
+        while stop_read<=ARLEN:
+
+            dalpha=0
+            dbeta=0
+            for jj in xrange(start_read,stop_read):
+                c=clicks[jj]
+                i=impressions[jj]
+                dalpha += dalpha_log_likelihood(i,c,alpha_old,beta_old)
+                dbeta += dbeta_log_likelihood(i,c,alpha_old,beta_old)
+
+
+            # dalpha,dbeta = num_der(impressions_arr,clicks_arr,alpha_old,beta_old)
+
+
+            eta = eta0
+            alpha=alpha_old + eta*dalpha
+            beta=beta_old + eta*dbeta
+            alpha= max(0.000001,alpha)
+            beta = max(0.000001,beta)
+            alpha = min(alpha,1000)
+            beta = min(beta,1000)
+
+            #print dalpha,num_der(impressions_arr,clicks_arr,alpha_old,beta_old)[0]
+            print alpha,beta,dalpha,dbeta, log_likelihood(impressions_arr,clicks_arr,alpha,beta),stop_read
+
+
+            if abs(alpha-alpha_old) <tol and abs(beta-beta_old)<tol:
+                break
+
+            alpha_old=alpha
+            beta_old=beta
+
+            start_read+=N
+            stop_read+=N
+
+    return alpha,beta
+
+
+
+def alpha_beta_from_mean_variance(impressions_arr, clicks_arr):
+
+    ctr_arr = clicks_arr/(impressions_arr+1e-72)
+
+    mu = np.mean(ctr_arr)
+    sigma2 = np.var(ctr_arr)
+
+    alpha = ( (1-mu)/sigma2 - 1/mu ) * mu**2
+    beta = alpha *( 1 /mu - 1)
+
+    return alpha, beta
+
+@cython.cdivision(True)
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def fit_alpha_beta(object impressions_arr, object clicks_arr,
+                   double alpha0=1.0, double beta0=1.0,
+                   int niter=10000,
+                   int num_threads=1,
+                   float tol=1e-10):
     """
     Fit betabinomials coefficients
     :param impressions_arr:
@@ -54,6 +216,8 @@ def fit_alpha_beta(object impressions_arr, object clicks_arr, double alpha0=1.5,
     :param alpha0:
     :param beta0:
     :param niter:
+    :param num_threads number of threads for the summations
+    :param tol: tolerance for the stopping criterion
     :return:
     """
 
@@ -65,14 +229,15 @@ def fit_alpha_beta(object impressions_arr, object clicks_arr, double alpha0=1.5,
     cdef double alpha
     cdef double beta
     cdef int it, jj,N
-    N=len(clicks)
+
+    N = len(clicks)
 
     cdef double numerator,denominator,c,i
     for it in xrange(niter):
 
         numerator=0
         denominator=0
-        for jj in prange(N,nogil=True):
+        for jj in prange(N,nogil=True,num_threads=num_threads):
             c=clicks[jj]
             i=impressions[jj]
             numerator += digamma(c + alpha_old) - digamma(alpha_old)
@@ -83,7 +248,7 @@ def fit_alpha_beta(object impressions_arr, object clicks_arr, double alpha0=1.5,
 
         numerator=0
         denominator=0
-        for jj in prange(N,nogil=True):
+        for jj in prange(N,nogil=True,num_threads=num_threads):
             c=clicks[jj]
             i=impressions[jj]
             numerator += digamma(i-c + beta_old) - digamma(beta_old)
@@ -93,9 +258,12 @@ def fit_alpha_beta(object impressions_arr, object clicks_arr, double alpha0=1.5,
 
         beta=beta_old*numerator/denominator
 
+
+        #print alpha,beta, - log_likelihood(impressions_arr,clicks_arr,alpha,beta)
+
         #print 'alpha {} | {}  beta {} | {}'.format(alpha,alpha_old,beta,beta_old)
 
-        if abs(alpha-alpha_old) and abs(beta-beta_old)<1e-10:
+        if abs(alpha-alpha_old) <tol and abs(beta-beta_old)<tol:
             #print 'early stop'
             break
 
@@ -103,6 +271,158 @@ def fit_alpha_beta(object impressions_arr, object clicks_arr, double alpha0=1.5,
         beta_old=beta
 
     return alpha,beta
+
+
+
+cdef shuffle_data(double[:] impressions_arr, double[:] clicks_arr,size_t n):
+    """
+    Utility function to shuffle the data between minibatches
+    :param impressions_arr:
+    :param clicks_arr:
+    :param n:
+    :return:
+    """
+    cdef size_t i,j;
+    cdef double t;
+
+
+    for i in range(n):
+        j = i + rand() / (RAND_MAX / (n - i) + 1)
+        t = impressions_arr[j]
+        impressions_arr[j] = impressions_arr[i]
+        impressions_arr[i] = t
+
+        t = clicks_arr[j]
+        clicks_arr[j] = clicks_arr[i]
+        clicks_arr[i] = t
+
+
+
+@cython.cdivision(True)
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def fit_alpha_beta_minibatch(object impressions_arr, object clicks_arr,
+                   double alpha0=1.0, double beta0=1.0,
+                   int niter=10000,
+                   int num_threads=1,
+                   int batch_size= 1000,
+                   float tol=1e-10
+                   ):
+    """
+    Fit betabinomials coefficients
+    :param impressions_arr:
+    :param clicks_arr:
+    :param alpha0:
+    :param beta0:
+    :param niter:
+    :param num_threads number of threads for the summations
+    :return:
+    """
+
+    assert len(impressions_arr) == len(clicks_arr), 'clicks {}!={} impressions'.format(len(impressions_arr),len(clicks_arr))
+    cdef double[:] impressions = array('d',impressions_arr)
+    cdef double[:] clicks = array('d',clicks_arr)
+
+    cdef double alpha_old=alpha0
+    cdef double beta_old=beta0
+    cdef double alpha
+    cdef double beta
+    cdef size_t it, jj,N, ARLEN, start_read,stop_read
+
+    N = batch_size
+    ARLEN=len(clicks)
+
+    cdef double numerator,denominator,c,i
+    shuffle_data(impressions,clicks,ARLEN)
+
+    start_read = 0
+    stop_read = N
+    for it in xrange(niter):
+        #shuffle_data(impressions,clicks,ARLEN)
+
+        numerator=0
+        denominator=0
+        for jj in prange(start_read,stop_read,nogil=True,num_threads=num_threads):
+            c=clicks[jj]
+            i=impressions[jj]
+            numerator += digamma(c + alpha_old) - digamma(alpha_old)
+
+            denominator += digamma(i + alpha_old+beta_old) - digamma(alpha_old+beta_old)
+
+        alpha=alpha_old*numerator/denominator
+
+        numerator=0
+        denominator=0
+        for jj in prange(start_read,stop_read,nogil=True,num_threads=num_threads):
+            c=clicks[jj]
+            i=impressions[jj]
+            numerator += digamma(i-c + beta_old) - digamma(beta_old)
+
+            denominator += digamma(i + alpha_old+beta_old) - digamma(alpha_old+beta_old)
+
+
+        beta=beta_old*numerator/denominator
+
+        #print 'alpha {} | {}  beta {} | {}'.format(alpha,alpha_old,beta,beta_old)
+
+        if abs(alpha-alpha_old) <tol and abs(beta-beta_old)<tol:
+            break
+
+        alpha_old=alpha
+        beta_old=beta
+
+        start_read+=N
+        stop_read+=N
+
+        if stop_read>=ARLEN:
+            #print 'reshuffling batch {}  start = {} stop = {} '.format(N,start_read,stop_read)
+            shuffle_data(impressions,clicks,ARLEN)
+            start_read=0
+            stop_read=N
+
+    return alpha,beta
+
+from math import gamma as gammafunc
+from cmath import log
+
+
+# @cython.cdivision(True)
+# @cython.boundscheck(False)
+# @cython.wraparound(False)
+# def log_likelihood(object impressions_arr, object clicks_arr,
+#                    double alpha=1.0, double beta=1.0):
+#     """
+#     Fit betabinomials coefficients
+#     :param impressions_arr:
+#     :param clicks_arr:
+#     :param alpha0:
+#     :param beta0:
+#     :param niter:
+#     :param num_threads number of threads for the summations
+#     :param tol: tolerance for the stopping criterion
+#     :return:
+#     """
+#
+#     cdef double[:] impressions = array('d',impressions_arr)
+#     cdef double[:] clicks = array('d',clicks_arr)
+#
+#     cdef double alpha_tilde
+#     cdef double beta_tilde
+#     cdef int it
+#     cdef double i,c,res
+#
+#     N = len(clicks)
+#
+#     for it in xrange(N):
+#         i = impressions[it]
+#         c = clicks[it]
+#         res+=lgamma(alpha+beta)  + lgamma(c+alpha) + lgamma(i-c+beta) -  \
+#     (lgamma(i+alpha+beta) + lgamma(alpha) + lgamma(beta))
+#
+#
+#
+#
+#     return res
 
 
 #The posterior distribution for rates | clicks ~ Beta(clicks + alpha, imps - clicks + beta)
@@ -143,33 +463,20 @@ def posterior_sf(x,imps,clicks,alpha_hat,beta_hat):
     rv=get_rates_posterior_rv(imps,clicks,alpha_hat,beta_hat)
     return rv.sf(x)
 
+def goodness_fit_rates(imps,clicks,alpha_hat,beta_hat, confidence=0.05):
+    """
+    Estimates whether the fit can be rejected to a certain confidence level
+    :param imps:
+    :param clicks:
+    :param alpha_hat:
+    :param beta_hat:
+    :return:
+    """
 
-# def fit_alpha_beta_py(impressions, clicks, alpha0=1.5, beta0=5,niter=1000):
-#
-#
-#     alpha_old=alpha0
-#     beta_old=beta0
-#
-#     for it in range(niter):
-#
-#         alpha=alpha_old*\
-#         (sum(psi(c + alpha_old) - psi(alpha_old) for c,i in zip(clicks,impressions)))/\
-#         (sum(psi(i + alpha_old+beta_old) - psi(alpha_old+beta_old) for c,i in zip(clicks,impressions)))
-#
-#
-#         beta=beta_old*\
-#         (sum(psi(i-c + beta_old) - psi(beta_old) for c,i in zip(clicks,impressions)))/\
-#         (sum(psi(i + alpha_old+beta_old) - psi(alpha_old+beta_old) for c,i in zip(clicks,impressions)))
-#
-#
-#         #print 'alpha {} | {}  beta {} | {}'.format(alpha,alpha_old,beta,beta_old)
-#         sys.stdout.flush()
-#
-#         if np.abs(alpha-alpha_old) and np.abs(beta-beta_old)<1e-10:
-#             #print 'early stop'
-#             break
-#
-#         alpha_old=alpha
-#         beta_old=beta
-#
-#     return alpha,beta
+    rates = [c/(float(i) + 1e-72) for i,c in zip(imps,clicks)]
+
+    rv = betadist(alpha_hat, beta_hat)
+    D,p = kstest(rates,rv.cdf)
+    print rates
+    return D, p , p<confidence
+
