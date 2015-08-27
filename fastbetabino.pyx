@@ -93,8 +93,9 @@ def fit_alpha_beta_lbfgs(impressions_arr, clicks_arr, alpha0=1.0, beta0=1.0 ):
 
     func = lambda x: - log_likelihood(impressions_arr,clicks_arr,x[0],x[1])
 
-    opt = minimize(func,(alpha0,beta0),bounds=[(0.0001,1000),(0.0001,1000)],tol=1e-10,method='L-BFGS-B')
-    print opt
+    opt = minimize(func,(alpha0,beta0),bounds=[(0.0001,1000),(0.0001,1000)],
+                   tol=1e-10,method='L-BFGS-B', options={'maxiter':1000})
+    
     return opt['x']
 
 
@@ -199,7 +200,7 @@ def alpha_beta_from_mean_variance(impressions_arr, clicks_arr):
 @cython.wraparound(False)
 def fit_alpha_beta(object impressions_arr, object clicks_arr,
                    double alpha0=1.0, double beta0=1.0,
-                   int niter=10000,
+                   int niter=1000,
                    int num_threads=1,
                    float tol=1e-10):
     """
@@ -228,25 +229,25 @@ def fit_alpha_beta(object impressions_arr, object clicks_arr,
     cdef double numerator,denominator,c,i
     for it in xrange(niter):
 
-        numerator=0
-        denominator=0
+        numerator=N*(- digamma(alpha_old))
+        denominator=N*(- digamma(alpha_old+beta_old))
         for jj in prange(N,nogil=True,num_threads=num_threads):
             c=clicks[jj]
             i=impressions[jj]
-            numerator += digamma(c + alpha_old) - digamma(alpha_old)
+            numerator += digamma(c + alpha_old) #- digamma(alpha_old)
 
-            denominator+=digamma(i + alpha_old+beta_old) - digamma(alpha_old+beta_old)
+            denominator+=digamma(i + alpha_old+beta_old) #- digamma(alpha_old+beta_old)
 
         alpha=alpha_old*numerator/denominator
 
-        numerator=0
-        denominator=0
+        numerator=N*(- digamma(beta_old))
+        denominator=N*( - digamma(alpha_old+beta_old) )
         for jj in prange(N,nogil=True,num_threads=num_threads):
             c=clicks[jj]
             i=impressions[jj]
-            numerator += digamma(i-c + beta_old) - digamma(beta_old)
+            numerator += digamma(i-c + beta_old) #- digamma(beta_old)
 
-            denominator+=digamma(i + alpha_old+beta_old) - digamma(alpha_old+beta_old)
+            denominator+=digamma(i + alpha_old+beta_old) # - digamma(alpha_old+beta_old)
 
 
         beta=beta_old*numerator/denominator
@@ -332,28 +333,28 @@ def fit_alpha_beta_minibatch(object impressions_arr, object clicks_arr,
         shuffle_data(impressions,clicks,ARLEN)
         start_read = 0
         stop_read = N
-        
+
         while (stop_read<=ARLEN):
-            numerator=0
-            denominator=0
+            numerator=(stop_read -  start_read)*(- digamma(alpha_old))
+            denominator=(stop_read -  start_read)*(- digamma(alpha_old+beta_old))
             for jj in prange(start_read,stop_read,nogil=True,num_threads=num_threads):
                 c=clicks[jj]
                 i=impressions[jj]
                 #TODO: this can be further optimized by moving this digamma (alpha_old) from the loop
-                numerator += digamma(c + alpha_old) - digamma(alpha_old)
+                numerator += digamma(c + alpha_old) #- digamma(alpha_old)
 
-                denominator += digamma(i + alpha_old+beta_old) - digamma(alpha_old+beta_old)
+                denominator += digamma(i + alpha_old+beta_old) #- digamma(alpha_old+beta_old)
 
             alpha=alpha_old*numerator/denominator
 
-            numerator=0
-            denominator=0
+            numerator=(stop_read -  start_read)*(- digamma(beta_old))
+            denominator=(stop_read -  start_read)*(- digamma(alpha_old+beta_old))
             for jj in prange(start_read,stop_read,nogil=True,num_threads=num_threads):
                 c=clicks[jj]
                 i=impressions[jj]
-                numerator += digamma(i-c + beta_old) - digamma(beta_old)
+                numerator += digamma(i-c + beta_old) # - digamma(beta_old)
 
-                denominator += digamma(i + alpha_old+beta_old) - digamma(alpha_old+beta_old)
+                denominator += digamma(i + alpha_old+beta_old)# - digamma(alpha_old+beta_old)
 
 
             beta=beta_old*numerator/denominator
