@@ -95,7 +95,7 @@ def fit_alpha_beta(object impressions_arr, object clicks_arr, double alpha0=1.5,
 
         #print 'alpha {} | {}  beta {} | {}'.format(alpha,alpha_old,beta,beta_old)
 
-        if abs(alpha-alpha_old) and abs(beta-beta_old)<1e-10:
+        if abs(alpha-alpha_old)<1e-10 and abs(beta-beta_old)<1e-10:
             #print 'early stop'
             break
 
